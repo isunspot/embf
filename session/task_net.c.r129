@@ -1,0 +1,306 @@
+/****************************************************************************** 
+* Copyright (C), 1997-2010, SUNGROW POWER SUPPLY CO., LTD. 
+* File name      :main.c
+* Author         :llemmx
+* Date           :2012-09-29
+* Description    :UI进程
+* Interface      :无
+* Others         :无
+*******************************************************************************
+* History:        初稿
+*------------------------------------------------------------------------------
+* 2011-05-03 : 1.0.0 : llemmx
+* Modification   :
+*------------------------------------------------------------------------------
+******************************************************************************/
+#include "global.h"
+#include "config.h"
+#include "assage.h"
+#include "netconf.h"
+#include "utils.h"
+#include "objcomm.h"
+
+#include "lwip/pbuf.h"
+#include "lwip/udp.h"
+#include "lwip/tcp.h"
+#include "lwip/dns.h"
+#include "lwip/dhcp.h"
+
+//t_assage_msg m_main_msg[3];		 //assage机制测试
+//assage_handle g_main_mh=0;
+//uint32_t open_assage_flag = 0;   
+extern assage_handle g_main_mh;  //assage删除测试
+uint32_t p_size1 =0;			//utils.c函数测试
+uint32_t p_size2 =0;
+uint32_t p_size3 =0;
+
+enum svr_states
+{
+    SS_NONE = 0,
+    SS_ACCEPTED,
+    SS_RECEIVED,
+    SS_CLOSING
+};
+
+typedef struct {
+    uint8_t retries;
+    uint8_t state;
+    struct tcp_pcb *pcb;
+}TCPSvrState;
+
+volatile TCPSvrState *g_net_ss;
+static err_t svr_poll(void *arg, struct tcp_pcb *pcb);
+
+void svr_close_conn(struct tcp_pcb *pcb,TCPSvrState *ss)
+{
+    err_t err;
+    
+    tcp_arg(pcb, NULL);
+    tcp_recv(pcb, NULL);
+    tcp_err(pcb, NULL);
+    tcp_poll(pcb, NULL,0);
+    tcp_sent(pcb, NULL);
+    if (ss != NULL){
+        mem_free(ss);
+        g_net_ss=NULL;
+    }
+    err = tcp_close(pcb);
+    if (err != ERR_OK){
+        /* error closing, try again later in poll */
+        tcp_poll(pcb,svr_poll,10);
+    }
+}
+
+/**
+ * The poll function is called every 2nd second.
+ * If there has been no data sent (which resets the retries) in 8 seconds, close.
+ * If the last portion of a file has not been sent in 2 seconds, close.
+ *
+ * This could be increased, but we don't want to waste resources for bad connections.
+ */
+static err_t svr_poll(void *arg, struct tcp_pcb *pcb)
+{
+    TCPSvrState *ss;
+    
+    ss=(TCPSvrState *)arg;
+    if (ss != NULL){
+        ss->retries++;
+        if (ss->retries>10){
+            ss->state=SS_CLOSING;
+            svr_close_conn(pcb,ss);
+        }else{
+            ss->state=SS_CLOSING;
+            svr_close_conn(pcb,ss);
+        }
+    }else{
+        /* nothing to be done */
+        tcp_abort(pcb);
+        return ERR_ABRT;
+    }
+    return ERR_OK;
+}
+
+static void svr_conn_err(void *arg, err_t err)
+{
+    TCPSvrState *ss;
+    
+    ss = (TCPSvrState *)arg;
+    if (ss != NULL){
+        mem_free(ss);
+        g_net_ss=NULL;
+    }
+}
+
+//网络相关函数
+static err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
+{
+    TCPSvrState *ss;
+
+    ss=(TCPSvrState *)arg;
+    if ((err!=ERR_OK) || (p == NULL)){
+        if (p!=NULL){
+            /* Inform TCP that we have taken the data. */
+            tcp_recved(pcb, p->tot_len);
+            pbuf_free(p);
+        }else{
+            ss->state = SS_CLOSING;
+        }
+        svr_close_conn(pcb,ss);
+        return ERR_OK;
+    }
+    
+    if(ss->state == SS_ACCEPTED || ss->state == SS_RECEIVED){
+        //uint8_t tcp_server_recv[256]={0};
+        
+        ss->state = SS_RECEIVED;
+        uint8_t* data = ((uint8_t *)p->payload);
+        tcp_recved(pcb, p->tot_len);
+        //处理网络数据
+        //AnalyDataFormETHPC(data,p->len,(void*)pcb, tcp_server_recv);
+        tcp_write(pcb,data,p->tot_len,1);
+        enter_low_power();
+        pbuf_free(p);
+    }else if(ss->state == SS_CLOSING){
+        /* odd case, remote side closing twice, trash data */
+        tcp_recved(pcb, p->tot_len);
+        pbuf_free(p);
+    }else{
+        /* unkown es->state, trash data  */
+        tcp_recved(pcb, p->tot_len);
+        pbuf_free(p);
+    }
+
+    return ERR_OK;
+}
+/**
+ * Data has been sent and acknowledged by the remote host.
+ * This means that more data can be sent.
+ */
+static err_t svr_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
+{
+    TCPSvrState *ss;
+    
+    ss=(TCPSvrState *)arg;
+    ss->retries=0;
+    
+    return ERR_OK;
+}
+
+static err_t tcp_server_accept(void *arg, struct tcp_pcb *pcb, err_t err)
+{ 
+    TCPSvrState *ss;
+    
+    if (g_net_ss!=NULL){
+        return ERR_MEM;
+    }
+    
+    tcp_accepted(pcb);
+    // Set priority
+    tcp_setprio(pcb,TCP_PRIO_MIN);
+    
+    ss= (TCPSvrState *)mem_malloc(sizeof(TCPSvrState));
+    if (ss != NULL){
+        ss->retries=0;
+        ss->state=SS_ACCEPTED;
+        ss->pcb=pcb;
+        g_net_ss=ss;
+        // Set up the various callback functions
+        tcp_arg(pcb, ss);
+        tcp_recv(pcb,tcp_server_recv);
+        tcp_err(pcb, svr_conn_err);
+        tcp_poll(pcb,svr_poll,238);//twice per second
+        tcp_sent(pcb,svr_sent);
+    }else
+        return ERR_MEM;
+
+    return ERR_OK;  
+}
+
+void net_start_svr(void)
+{
+    struct tcp_pcb *pcb;
+    embf_delay(2000);
+    pcb = tcp_new();
+    
+    if (pcb !=NULL){
+        g_net_ss=NULL;
+        //获取开放的端口号
+        uint16_t port = 502;
+        err_t    err  = tcp_bind(pcb, IP_ADDR_ANY, port);
+        if (err == ERR_USE){
+            tcp_close(pcb);
+        }else{
+            //pcb = tcp_listen_with_backlog(pcb,2);
+            pcb=tcp_listen(pcb);
+            tcp_accept(pcb, tcp_server_accept);
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+void task_net(void *p_arg)
+{
+    uint8_t lflag=0u,lsleep=0u;
+    uint32_t l_currti;
+	t_assage_msg l_msg;
+    
+    NetParam netp = 
+    {
+        {192, 168, 130, 17},
+        {255, 255, 128, 0},
+        {192, 168, 128, 254},
+        {0, 0, 0, 0},
+        {0, 0, 0, 0},
+        {0xAC,0x19,0x9F,0x1B,0x1B,0x1F},
+        0
+    };
+    drv_ioctl(gt_glp.fnet, NET_SET_INIT_ALL, &netp);
+    
+    net_start_svr();
+
+	
+//	 g_main_mh=assage_create_msg(m_main_msg,3,1);//assage机制试验
+    
+    l_currti=embf_get_tick();
+//	task_prio_prompt(); //优先级设置测试
+    while(true){
+
+	//utils.c函数测试
+//p_size1 = embf_get_stksize_used(2);
+//p_size2 = embf_get_stksize_used(3);
+//p_size3 = embf_get_stksize_used(5);
+//io_ctrl(UTILS_IO_LEDGREEN,UTILS_IO_HIGH);
+//io_ctrl(UTILS_IO_LEDGREEN,UTILS_IO_LOW);
+//
+//io_ctrl(UTILS_IO_LEDRED,UTILS_IO_HIGH);
+//io_ctrl(UTILS_IO_LEDRED,UTILS_IO_LOW);
+//io_ctrl(UTILS_IO_PWRIO,UTILS_IO_LOW);
+//assage_del_msg(g_main_mh);//assage删除测试成功
+//assage_delete_sig(gt_glp.fserial1);
+
+//assage机制试验
+//open_assage_flag = 1;
+//assage_get_msg(g_main_mh,0,&l_msg); //阻塞接收，看是否会成功
+
+	    lflag = 0;
+        if (gt_glp.pwr_mode){
+            embf_delay(1000u);
+            lsleep=1;
+            continue;
+        }
+        if (gt_glp.pwr_mode==0 && lsleep==1){
+            drv_ioctl(gt_glp.fnet, NET_SET_INIT_ALL, &netp);
+            net_start_svr();
+            lsleep=0;
+        }
+        //if (assage_accept(gt_glp.fnet)!=0u){
+
+            while(ETH_CheckFrameReceived() != 0u)
+            {
+				 	   	//切换时间测试
+
+    // GPIO_ResetBits(GPIOD,GPIO_Pin_3);
+     //切换时间测试
+	//		   	GPIO_SetBits(GPIOD,GPIO_Pin_3);
+                LwIP_Pkt_Handle(0u);
+
+						     		 		 			 				   //切换时间测试
+ //  GPIO_SetBits(GPIOD,GPIO_Pin_3);
+//切换时间测试
+            }
+ //           lflag=1u;		        //都会让出来
+//        }else{
+//            lflag=0u;
+//        }
+//        if ((embf_get_tick()-l_currti)>200u){
+//            LwIP_Periodic_Handle(embf_get_tick());
+//        }
+	//	task_prio_recover();  优先级测试
+        if (0u==lflag){
+
+            embf_delay(2u);
+
+        }
+    }
+}

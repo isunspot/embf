@@ -1,0 +1,362 @@
+#include "menu.h"
+#include "chart.h"
+#include "utils.h"
+#include "image.h"
+#include "assage.h"
+
+/* 上电第一个要显示的菜单，用户设定 */
+#define  FIRST_MENU         Menu_start
+
+
+
+/* 菜单例程用 */
+#define  MENU_PARAM_SET     1
+#define  MENU_WORK_MODE     2
+#define  MENU_PRO_PARAM     3
+#define  MENU_LOAD_DEFAULT  4
+typedef struct {
+    uint16_t MenuTOut;
+    uint8_t   Contrast;
+}t_menu_buf;
+
+
+TLCDModule *lgLCD;   /* LCD显示操作接口结构体 */
+TMenu gMenu;         /* 菜单操作结构 */
+t_menu_buf m_mb;
+
+int32_t size_ssize1 = 0;
+int32_t size_ssize2 = 0;
+int32_t size_ssize3 = 0;
+extern assage_handle g_main_mh;
+
+/* 内部工具函数声明 ---------------------------------------------------------------*/
+void DrawHead(uint8_t *title, uint8_t *icon, bool refresh);
+void showpassword(uint8_t i, uint8_t type, uint8_t bsetfont);
+void LoadDefault(uint8_t flag);
+void showitemselect(uint8_t x, uint8_t y, uint8_t dis, uint8_t cur, uint8_t max, uint8_t *selicon, uint8_t *desicon);
+/* ---------------------------------------------------------------------------------*/
+
+
+/* 例程菜单函数 -----------------------------------------------*/
+int DoDevInfo(void *p);
+int DoCommunication(void *p);
+int DoShowLang(void *p);
+int DoSetDefualtVar(void *p);
+int DoSendFunSet(void *p) ;
+int DoSMSSet(void *p);
+int DoSMSMainSet(void *p) ;
+int DoSMSTest(void *p) ;
+int DoDefaultSelect(void *p);
+int DoFindAddrSet(void *p);
+int Menu_start(void *p);
+int Menu_Logo(void *p);
+int Menu_Main(void *p);
+int Menu_MainSelect(void *p);// 系统主选择菜单
+int Menu_ContrastAdj(void *p);
+int Menu_HisRcd(void *p);
+int Menu_OnOff(void *p);
+int Menu_ParamSet(void *p);
+int Menu_RunInfo(void *p);
+int Menu_Password(void *p);
+int Menu_SysParamSelect(void *p);
+int Menu_ProParamSet(void *p);
+int Menu_SetConfirm(void *p);
+int Menu_SetOK(void *p);
+int Menu_SetError(void *p);
+int Menu_SetTime(void *p);
+int Menu_FaultRcd(void *p);
+int Menu_RunRcd(void *p);
+int Menu_FaultRcd(void *p);
+int Menu_ITAutoTest(void *p);
+int Menu_ATParamSet(void *p);
+int Menu_ProCountrySel(void *p);
+/* -------------------------------------------------------- */
+
+
+
+/* 菜单切换宏，不可修改 */
+#define MENU_EXCHANGE(menu)  \
+do{                          \
+    gMenu.acMenu = menu;     \
+    gMenu.Refresh = true;    \
+    gMenu.SubRefresh = true; \
+    gMenu.Key = MKEY_NONE;   \
+}while(0)                    \
+ 
+/* 菜单消息处理函数，不可修改 */
+int MainMenuMsgProc(PMsg msg)
+{
+    int mret = 0; // 菜单函数调用返回值
+    t_assage_msg l_msg;
+    
+    switch(msg->Message)
+    {
+    case MSG_TYPE_TIMER:
+        msg->Message = 0;
+        
+        // 超时无用户操作则返回主界面    
+        if(m_mb.MenuTOut > 0)
+        {
+            m_mb.MenuTOut--;
+            if(m_mb.MenuTOut == 0)
+            {
+                MENU_EXCHANGE(Menu_Main);
+            }
+        }
+        
+        /* 菜单显示定时用，定时到后可切换页面 */
+        if(gMenu.Tick > 0)
+        {
+            gMenu.Tick--;
+        }
+
+        /* 刷新菜单 */
+        do
+        {
+            mret = gMenu.acMenu(&gMenu);
+            gMenu.Key = MKEY_NONE;
+        }
+        while(MRET_REFRESH == mret);
+        if (g_main_mh!=0){
+            l_msg.msg=1;
+            assage_post_msg(g_main_mh,&l_msg);
+        }
+        break;
+    case MSG_TYPE_BUTTON:
+        msg->Message = 0;
+        m_mb.MenuTOut = MENU_TIMEOUT;
+        if(IS_VALID_ACTION(msg->Param1) && IS_VALID_KEY(msg->Param2))
+        {
+            // 更新按键码
+            gMenu.Key = msg->Param2;
+
+            // 有新按键动作，处理
+            do
+            {
+                mret = gMenu.acMenu(&gMenu);
+                gMenu.Key = MKEY_NONE;
+            }
+            while(MRET_REFRESH == mret);
+        }
+        break;
+    }
+    gMenu.Key = MKEY_NONE;
+    return 0;
+}
+
+/* UI初始化，负责注册菜单消息处理函数，不可修改 */
+int RegUIMsg(PProcBuf proc,void *lcd)
+{
+    if(lcd == NULL)
+    {
+        return -1;
+    }
+
+    lgLCD = (TLCDModule *)lcd;
+    
+    /* 菜单初始化为第一个要显示的菜单：启动界面方格 */
+    gMenu.Tick = MENU_STARTDELAY;
+    MENU_EXCHANGE(FIRST_MENU);
+
+    m_mb.MenuTOut  = MENU_TIMEOUT;
+    return RegMsgProc(proc,MainMenuMsgProc);
+}
+
+
+
+// 启动界面，显示方格
+int Menu_start(void *p)
+{
+    if(gMenu.Refresh == true)
+    {
+        gMenu.Refresh = false;
+        lgLCD->clear();
+        int i = 0, j = 0 , m = 0;
+    
+        for(i = 0; i < 26; i++)
+        {
+            for(j = i % 2; j < 16; j++)
+            {
+                for(m = 0 ; m < 10 ; m++)
+                {
+                    lgLCD->drawline(i * 10, j * 10 + m, 10, 0xFF, LCD_DRAW_HORI);
+                }
+                j++;
+            }
+            IWDG_ReloadCounter();
+        }
+    }
+
+    // 事件响应
+    if(gMenu.Tick == 0)
+    {
+        gMenu.Tick = MENU_STARTDELAY;
+        MENU_EXCHANGE(Menu_Logo);
+        return MRET_REFRESH;  // 刷新菜单
+    }
+    return MRET_OK;
+}
+
+// Logo界面
+int Menu_Logo(void *p)
+{
+    if(gMenu.Refresh == true)
+    {
+        gMenu.Refresh = false;
+        lgLCD->clear();
+        lgLCD->showimage(50, 70, 144, 21, Image_Logo, 0, LCD_DRAW_GRAY);
+    }
+
+    // 事件响应
+    if(gMenu.Tick == 0)
+    {
+        gMenu.Tick = MENU_STARTDELAY;
+        MENU_EXCHANGE(Menu_Main);
+        return MRET_REFRESH;
+    }
+    return MRET_OK;
+}
+
+
+// 主界面数据
+void Data_Main(void)
+{
+    uint16_t power[84] = { 0 };
+    char buf[12] = { 0 };
+    Curvegram curvegram =
+    {
+        {0, 50},
+        {100, 100},
+        "t",
+        "P(%)",
+        {0, 24},
+        2,
+        {0, 100},
+        10,
+        SHOW_ALL | SHOW_SOLID
+    };
+    chart_draw_curvegram(&curvegram, power, 84);
+
+    sprintf(buf, "%6.3fkW", 100000 / 1000.0);//runinfo.outP 总功率
+    widget_label(235 - strlen(buf) * 6,  64, buf, FONT_SIZE_9);
+
+    sprintf(buf, "%5.1fkWh", 100000 / 1000.0);//statinfo.day_energy
+    widget_label(235 - strlen(buf) * 6,  84, buf, FONT_SIZE_9);
+    if( 100000 < 999999999)//statinfo.total_energy
+    {
+        sprintf(buf, "%9dkWh", 966770);//statinfo.total_energy
+    }
+    else
+    {
+        sprintf(buf, "99966779kWh");
+    }
+    widget_label(235 - strlen(buf) * 6, 104, buf, FONT_SIZE_9);
+
+    switch(1)//runinfo.work_status
+    {
+    case 1://P_RUN
+        sprintf(buf, "  运行  ");
+        break;
+    case 2://P_STOP
+        sprintf(buf, "  停机  ");
+        break;
+    case 3://P_INIT_STANDBY
+        sprintf(buf, "初始待机");
+        break;
+    case 4://P_KEY_SHUTDOWN
+        sprintf(buf, "按键关机");
+        break;
+    case 5://P_STANDBY
+        sprintf(buf, "  待机  ");
+        break;
+    case 6://P_HURRY_STOP
+        sprintf(buf, "紧急停机");
+        break;
+    case 7://P_STARTING
+        sprintf(buf, " 启动中 ");
+        break;
+    case 8://P_COM_FLT
+    default:
+        sprintf(buf, "通讯故障");
+        break;
+    }
+    widget_label(173, 124, buf, FONT_SIZE_9);
+}
+
+uint8_t bcd_to_dec(uint8_t data)
+{
+    return (((data>>4U) & 0xF)*10U) + (data & 0xF);
+}
+
+void get_sys_time(void)
+{
+    uint8_t l_buf[7];
+    
+    drv_read(gt_glp.frtc,l_buf,6U);
+    gt_glp.sys_time.tm_year=2000+bcd_to_dec(l_buf[0]);
+    gt_glp.sys_time.tm_mon =bcd_to_dec(l_buf[1]);
+    gt_glp.sys_time.tm_mday=bcd_to_dec(l_buf[2]);
+    gt_glp.sys_time.tm_hour=bcd_to_dec(l_buf[3]);
+    gt_glp.sys_time.tm_min =bcd_to_dec(l_buf[4]);
+    gt_glp.sys_time.tm_sec =bcd_to_dec(l_buf[5]);
+}
+int32_t m_highusage=0;
+// 主界面
+int Menu_Main(void *p)
+{
+    char test[] ="系统保护限";
+    if(gMenu.Refresh == true)
+    {
+        gMenu.Refresh = false;
+        m_mb.MenuTOut = 0;
+        lgLCD->clear();
+        lgLCD->setbacklight(m_mb.Contrast);
+        lgLCD->cleararea(0, 0, 240, 20, 0xFF);
+
+        
+        widget_label(30,  32, "CO", FONT_SIZE_9);
+        widget_label(43,  34, "2", FONT_SIZE_6);
+        widget_label(50,  29, "CO", FONT_SIZE_11);
+        widget_label(68,  34, "2", FONT_SIZE_6);
+
+		widget_label(50,  45, "完毕1111℃", FONT_SIZE_11);
+        widget_label(30,  69, "钟", FONT_SIZE_9);
+        widget_label(30,  89, "1234567890!#$%&'()*+,-", FONT_SIZE_9);
+        widget_label(30, 109, "./:;<=>?@[]^_{|}~\\\"g\|", FONT_SIZE_9);
+
+   //     lgLCD->drawline(160, 76, 75, 0xFF, LCD_DRAW_HORI);
+  //      lgLCD->drawline(160, 96, 75, 0xFF, LCD_DRAW_HORI);
+  //      lgLCD->drawline(160, 116, 75, 0xFF, LCD_DRAW_HORI);
+  //      lgLCD->drawline(160, 136, 75, 0xFF, LCD_DRAW_HORI);
+    }
+
+    get_sys_time();
+    char buf[32] = { 0 };
+    // 系统时间显示
+    sprintf(buf,"%04d/%02d/%02d %02d:%02d:%02d ",gt_glp.sys_time.tm_year,
+            gt_glp.sys_time.tm_mon,gt_glp.sys_time.tm_mday,
+            gt_glp.sys_time.tm_hour,gt_glp.sys_time.tm_min,gt_glp.sys_time.tm_sec);
+    lgLCD->setfontcolor(0x00, 0xff);
+    widget_label(5, 6, buf, FONT_SIZE_6);
+    lgLCD->setfontcolor(0xff, 0x00);
+    Data_Main();
+    //demo
+    if (embf_get_usage()>m_highusage){
+        m_highusage=embf_get_usage();
+    }
+    sprintf(buf,"usage=%d%% high=%d%% ",embf_get_usage(),m_highusage);
+    widget_label(5,20,buf,FONT_SIZE_6);
+
+    // 事件响应
+    switch(gMenu.Key)
+    {
+    case MKEY_ENTER:
+    case MKEY_ESC:
+    case MKEY_DOWN:
+    case MKEY_RIGHT:
+        break;
+    default:
+        break;
+    }
+    return MRET_OK;
+}

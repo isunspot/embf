@@ -1,0 +1,65 @@
+/****************************************************************************** 
+* Copyright (C), 1997-2010, SUNGROW POWER SUPPLY CO., LTD. 
+* File name      :main.c
+* Author         :llemmx
+* Date           :2012-09-29
+* Description    :UI进程
+* Interface      :无
+* Others         :无
+*******************************************************************************
+* History:        初稿
+*------------------------------------------------------------------------------
+* 2011-05-03 : 1.0.0 : llemmx
+* Modification   :
+*------------------------------------------------------------------------------
+******************************************************************************/
+#include "global.h"
+#include "config.h"
+#include "assage.h"
+#include "fcntl.h"
+#include "utils.h"
+
+t_assage_msg m_main_msg[3];
+assage_handle g_main_mh=0;
+
+void task_main(void *p_arg)
+{
+    char buf[64];
+    t_embf_canmsgrx rxmsg;
+    uint8_t ret=0;
+    uint32_t l_ret_serial1,l_ret_can1;
+    t_assage_msg l_msg;
+    
+    g_main_mh=assage_create_msg(m_main_msg,3,1);
+    
+    while(true){
+        l_ret_serial1=assage_accept(gt_glp.fserial1);
+        l_ret_can1   =assage_accept(gt_glp.fdcan1);
+        assage_get_msg(g_main_mh,ASSAGE_GET_NODELAY,&l_msg);
+        
+        if (l_ret_serial1==1){
+            drv_read(gt_glp.fserial1,buf,64);
+            drv_write(gt_glp.fserial1,buf,64);
+            ret=1;
+        }
+        else if (l_ret_can1==1){
+            drv_read(gt_glp.fdcan1,&rxmsg,sizeof(rxmsg));
+        }
+        else{
+            ret=0;
+        }
+        
+        if (io_get(UTILS_IO_SLEEPIN)==0 && gt_glp.pwr_mode){
+            init_run();
+        }
+        
+        if (l_msg.msg==1){
+            drv_write(gt_glp.fserial1,"send second message ",20);
+        }
+        
+        if (0==ret){
+            embf_delay(2);
+        }
+    }
+}
+

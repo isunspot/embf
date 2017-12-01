@@ -1,0 +1,123 @@
+/****************************************************************************** 
+* Copyright (C), 1997-2010, SUNGROW POWER SUPPLY CO., LTD. 
+* File name      :main.c
+* Author         :llemmx
+* Date           :2012-09-29
+* Description    :UI进程
+* Interface      :无
+* Others         :无
+*******************************************************************************
+* History:        初稿
+*------------------------------------------------------------------------------
+* 2011-05-03 : 1.0.0 : llemmx
+* Modification   :
+*------------------------------------------------------------------------------
+******************************************************************************/
+#include "global.h"
+#include "config.h"
+#include "assage.h"
+#include "fcntl.h"
+#include "utils.h"
+#include "drivers.h"
+
+t_assage_msg m_main_msg[3];
+assage_handle g_main_mh=0;
+//extern assage_handle g_main_mh;//assage机制测试
+//extern uint32_t open_assage_flag;
+t_gparam setTime;
+
+extern void get_sys_time(void);
+uint32_t baud_tmp = 0;
+void task_main(void *p_arg)
+{
+	//波特率更改实验
+    uint32_t baud1 = 57600; 
+    drv_ioctl(gt_glp.fserial1,USART_SET_BAUD,&baud1);
+
+	drv_ioctl(gt_glp.fserial1,USART_GET_BAUD,&baud_tmp);
+
+
+
+	//波特率更改实验
+    char buf[64];
+    t_embf_canmsgrx rxmsg;
+    uint8_t ret=0;
+    uint32_t l_ret_serial1,l_ret_can1;
+    t_assage_msg l_msg;
+    
+    g_main_mh=assage_create_msg(m_main_msg,3,1);
+
+		uint8_t l_buf[7];
+		l_buf[0]=0x12;
+		l_buf[1]=0x11;
+		l_buf[2]=0x30;
+		l_buf[3]=0x13;
+		l_buf[4]=0x27;
+		l_buf[5]=0x05;
+		drv_write(gt_glp.frtc,l_buf,6);//设置时间函数
+ 
+    while(true){
+
+
+
+  //  get_sys_time();	//一直执行，对系统压力大
+
+
+
+
+
+		ret = 0; //防止task_main不让出CPU，这样task_net不会进入执行
+        l_ret_serial1=assage_accept(gt_glp.fserial1);
+     //   l_ret_can1   =assage_accept(gt_glp.fdcan1);
+    //   assage_get_msg(g_main_mh,0xFF,&l_msg); //阻塞接收，看是否会成功
+//	if(open_assage_flag == 1)
+//	{
+//		    l_msg.msg=3;
+//            assage_post_msg(g_main_mh,&l_msg);
+//	}
+        
+        if (l_ret_serial1==1){
+
+
+            drv_read(gt_glp.fserial1,buf,64);
+            drv_write(gt_glp.fserial1,buf,64);
+//			buf[0] = 0x12;					//时间设置实验，成功
+//			buf[1] =  0x11;
+//			buf[2] =  0x24;
+//			buf[3] = 0x10;
+//			buf[4] =  0x05;
+//			buf[5] = 0x07;
+//		    drv_write(gt_glp.frtc,buf,6);
+//			setTime.sys_time.tm_year = 0x13; //设为13年	   时间设置成功
+
+
+            ret=1;
+		  // uint8_t buf[]={0x12,0x06,0x15,0x19,0x57,0x30}; //rtc write函数增加合法性检查
+          // drv_write(gt_glp.frtc,buf,6);
+        }
+        else if (l_ret_can1==1){
+            drv_read(gt_glp.fdcan1,&rxmsg,sizeof(rxmsg));
+        }
+        else{
+            ret=0;
+        }
+        
+        if (io_get(UTILS_IO_SLEEPIN)==0 && gt_glp.pwr_mode){
+            init_run();
+        }
+        
+        if (l_msg.msg==1){
+
+            drv_write(gt_glp.fserial1,"send second message ",20);
+        }
+        
+        if (0==ret){
+
+
+            embf_delay(2);
+
+
+        }
+    }
+}
+
